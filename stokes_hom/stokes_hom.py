@@ -73,8 +73,11 @@ except PETSc.Error as e:
 
 # extract velocity and pressure solutions
 u, p = up.subfunctions
+u.rename("Velocity")
+p.rename("Pressure")
 
 # write to a file
+File("stokes.pvd").write(u, p)
 
 # plotting
 
