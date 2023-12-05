@@ -28,7 +28,7 @@ u = Function(V)
 solve(a == L, u, solver_parameters={"ksp_type": "cg", "pc_type": "none"})
 
 # output to a file
-File("helmholtz.pvd").write(u)
+File("figs/helmholtz.pvd").write(u)
 
 # import matplotlib
 try:
