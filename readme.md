@@ -1,12 +1,12 @@
-Python code to simulate the Stokes-Brinkman equations [Chen] [1]
+Python code to simulate the Stokes-Brinkman equations [1]
 
 - generalised_stokes.py solves the PDE for a supplied configuration
 - configurations can be added in configurations.py
-- mg_parallel_channel.py solves a 1D toy problem given in [Chen] [1]
-- support Braess-Sarazin [Braess] [2], and Vanka [Vanka] [3] either as standalone
+- mg_parallel_channel.py solves a 1D toy problem given in [1]
+- support Braess-Sarazin [2], and Vanka [3] either as standalone
 preconditioner or coupled with multigrid
 
-The only dependency is Firedrake. This can be installed following [these] [4] instructions.
+The only dependency is Firedrake. This can be installed following these instructions [4].
 
 
 [1]: https://onlinelibrary.wiley.com/doi/full/10.1002/fld.5199
