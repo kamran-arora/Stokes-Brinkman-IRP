@@ -1,0 +1,722 @@
+\documentclass[12pt]{article}
+\usepackage{amsmath, amsthm, amssymb, amsfonts}
+\usepackage{mathtools}
+\usepackage{hyperref}
+\usepackage{bbm}
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=red,
+}
+\usepackage[margin=1in]{geometry}
+\usepackage{enumerate}
+\usepackage{xcolor}
+\usepackage{sectsty}
+%\sectionfont{\color{magenta}}
+\usepackage{caption}
+\usepackage{parskip}
+\usepackage{tikz}
+\usepackage{graphicx}
+\usepackage{subfigure}
+\usepackage{float}
+\usepackage{algorithm2e}
+\usepackage{url}
+
+% boxes
+\usepackage[framemethod=TikZ]{mdframed}
+\newmdenv[linewidth=1pt, skipabove=12, skipbelow=12]{eqn-box}
+
+% equation numbering
+%\numberwithin{equation}{section}
+
+% custom commands
+% probability
+\newcommand\bbP{\mathbb{P}}
+\newcommand\prob[1]{\mathbb{P}\brack{#1}}
+% expectation
+\newcommand{\bbE}{\mathbb{E}}
+\newcommand\expect[1]{\bbE\sbrack{#1}}
+\newcommand\expectt[2]{\bbE_{#1}\sbrack{#2}}
+% epsilon
+\newcommand{\ve}{\varepsilon}
+% d for a derivative
+\newcommand{\dd}{\mathop{}\!\mathrm{d}}
+% derivative of #1 w.r.t #2
+\newcommand\ddfrac[2]{\frac{\dd #1}{\dd #2}}
+% auto-size norm
+\newcommand\norm[1]{\left\lVert#1\right\rVert}
+% absolute value
+\newcommand\absv[1]{\left\lvert#1\right\rvert}
+% auto-size brackets
+\renewcommand\brack[1]{\left (#1\right)}
+\newcommand\abrack[1]{\left \langle #1 \right \rangle}
+\newcommand\sbrack[1]{\left [ #1 \right ]}
+\newcommand\cbrack[1]{\left \{ #1 \right \}}
+
+% environments
+\theoremstyle{theorem}
+\newtheorem{theorem}{Theorem}[section]
+
+\newtheorem*{remark}{Remark}
+
+\title{Multiscale flow in porous media: \\
+\large A finite element method for the Stokes-Brinkman equation}
+\author{Kamran Arora}
+\date{\today}
+
+\setcounter{tocdepth}{2}
+
+\begin{document}
+\maketitle
+% \newpage
+\tableofcontents
+\newpage
+\section{Introduction}\label{sec: intro}
+
+In this project, we are concerned with modelling resin flow within composite materials. A composite material is simply a material formed as a combination of other materials, which have different properties. Two of the most common examples of composite materials are reinforced concrete and carbon fibres. These materials have the benefit of being strong and often light. The typical manufacturing process uses liquid composite moulding (LCM) technology, where a resin is infused to harden the composite material into its final state. Knowledge of permeability variations can help optimise the LCM stage of the manufacturing process \cite{bodaghi2019}, but these cannot be experimentally measured. Instead, numerical simulations are used to predict this quantity. The goal is to develop a fast and accurate numerical method for prediction that can be used to optimise and streamline LCM.
+
+This project stems from the work done in \cite{chen2023}, in which the author develops a numerical method based on the Fast Fourier Transform (FFT) to predict the permeability of composite materials. We aim to build upon this in three ways:
+
+\begin{enumerate}
+    \item Encapsulate the variation in local fibre orientation via a distribution, and use this to generate random realisations of a composite material.
+    \item Implement a solver based on Finite Element Methods (FEM), and compare its performance to the solver proposed in \cite{chen2023}.
+    \item Construct a neural network to predict macroscopic permeability, given image data of the composite material.
+\end{enumerate}
+
+The focus of this report is on the development of a numerical solver based on FEM. In particular, in Section \ref{sec: problem-formulation} we introduce the problem from a technical perspective, and review the FFT method proposed by \cite{chen2023}. In Section \ref{sec: maths}, we introduce the relevant mathematical techniques used to design our solver. We then perform and analyse a selection of numerical experiments in Section \ref{sec: results}, and conclude with a discussion of future directions in Section \ref{sec: discussion}.
+
+\section{Problem formulation and motivation}\label{sec: problem-formulation}
+
+In this section we introduce the problem, and the partial differential equation (PDE) to be solved following the presentation of \cite{chen2023}.
+
+The composites we concern ourselves with can be considered at three scales (see Figure \ref{fig: x-ray-ct}):
+\begin{itemize}
+    \item In the micro-scale, we have individual material fibres placed next to each-other.
+    \item In the meso-scale, the collections of fibres form bundles, oriented in different directions.
+    \item In the macro-scale, the bundles are weaved together to create a dry composite material, into which resin can be injected.
+\end{itemize}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.75\textwidth]{figures/Labelled Scan.png}
+    \caption{2D slice of an X-ray CT scan of a composite material. Bundles are outlined in pink, fibres are outlined in orange, and regions of fluid flow are labelled in green.}
+    \label{fig: x-ray-ct}
+\end{figure}
+
+Consider the dual-scale porous medium shown in Figure \ref{fig: dual-scale-porous-medium}. We consider fluid flow through bundles at the meso-scale, and between bundles at the macro-scale. $L_1$ is the characteristic length scale of the clear fluid region, and $L_2$ of the porous solid region.
+
+Assume that $L_2/L_1 \ll 1$ so that the length scales are separable. We consider the flow of an incompressible, Newtonian fluid. In the clear fluid region we use the Stokes equations with dynamic viscosity $\mu$. In the solid porous region we use a Darcy-Brinkman equation \cite{brinkman1949} with effective permeability $\mu_e$ and local permeability tensor $\mathbf{k}_s$. The flow across the unified domain $\Omega = \Omega_f \cup \Omega_s$ can thus be described by a Stokes-Brinkman PDE
+\begin{equation}\label{eq: sb-standard}
+    \begin{cases}
+        \varphi(x)\Delta u(x) - \beta(x)u(x) - \nabla p(x) = f(x) \\
+        \nabla \cdot u(x) = 0
+    \end{cases} x \in \Omega,
+\end{equation}
+where $u$ is the local velocity, $p$ is the local pressure, and
+\begin{equation}
+    \varphi(x) = 
+    \begin{cases}
+        \mu, \quad &x \in \Omega_f, \\
+        \mu_e, \quad &x \in \Omega_s,
+    \end{cases}
+    \quad
+    \text{and}
+    \quad
+    \beta(x) = 
+    \begin{cases}
+        0, \quad &x \in \Omega_f, \\
+        \mu \mathbf{k}_s^{-1}, \quad &x \in \Omega_s.
+    \end{cases}
+\end{equation}
+To ensure well-posedness of the PDE, appropriate boundary conditions must be enforced. One possible choice is periodic boundary conditions for both velocity and pressure. Following \cite{chen2023}, this is the choice we make.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.75\textwidth]{figures/dual-scale-porous-medium}
+    \caption{Dual scale porous medium with clear fluid region $\Omega_f$ and porous solid region $\Omega_s$ with respective length scales $L_1$ and $L_2$. $\Gamma$ is the boundary between the two regions. This figure is taken from \cite{chen2023}.}
+    \label{fig: dual-scale-porous-medium}
+\end{figure}
+
+Recall from Section \ref{sec: intro}, that the problem is to quickly and accurately compute the permeability of a composite material. More precisely, the quantity of interest is the macroscopic permeability $\mathbf{K}$. We can compute this using Darcy's law at macroscale:
+\begin{equation}\label{eq: darcy-macro}
+U = - \frac{1}{\mu}\mathbf{K} \cdot G,
+\end{equation}
+where $U = \abrack{u}_\Omega$ is the macroscopic velocity, $G = \abrack{\nabla p}_\Omega$ is the macroscopic pressure gradient, and $\abrack{\cdot}_\Omega$ denotes an average over the domain $\Omega$. Therefore, by forcing the system with a macroscopic pressure gradient, we can compute the macroscopic permeability. More precisely, we set $f(x)$ in \eqref{eq: sb-standard} to be $G$, solve \eqref{eq: sb-standard} for $u$, and then use \eqref{eq: darcy-macro} to compute $\mathbf{K}$.
+
+In \cite{chen2023}, the author proposes a FFT based solver for \eqref{eq: sb-standard}. Consider the Stokes-Brinkman PDE forced by a macroscopic pressure gradient $G$. Introduce a polarisation vector
+\begin{equation}
+    \tau(x) = (\varphi(x) - \varphi_0)\Delta u(x) - (\beta(x) - \beta_0 I) \cdot u(x),
+\end{equation}
+where $\varphi_0$ and $\beta_0$ are reference material coefficients. Rewriting \eqref{eq: sb-standard} in terms of $\tau$ and $G$, and passing into Fourier space gives
+\begin{equation}
+    \begin{cases}
+        -\brack{\varphi_0 \norm{\xi}^2 + \beta_0}\hat u - i\xi \hat p'+ \hat \tau = \hat G \\
+        - \norm{\xi}^2\hat p' = i \xi \cdot \hat \tau
+    \end{cases}
+    \forall \xi \in \Xi,
+\end{equation}
+where the hat denotes a variable in Fourier space, and $\Xi$ is the set of frequency vectors. This problem has a closed form solution
+\begin{equation}
+    \hat u = 
+    \begin{cases}
+        \frac{1}{\beta_0} \brack{\hat \tau(0) - G}, \quad &\xi = 0 \\
+        \hat{\mathbb{G}} \cdot \hat \tau, \quad &\xi \neq 0,
+    \end{cases}
+    \quad
+    \text{where}
+    \quad
+    \hat{\mathbb{G}} = \frac{I - \frac{\xi \otimes \xi}{\norm{\xi}^2}}{\varphi_0\norm{\xi}^2 + \beta_0}.
+\end{equation}
+
+For a given $u$, one can compute $\tau$. By utilising the FFT, one can then use $\hat \tau$ to compute $\hat u$. The updated velocity field can then be found with the inverse FFT. Given a stopping criterion (see Section \ref{sec: implementation}) this defines an iterative algorithm for solving \eqref{eq: sb-standard}. Full details can be found in Algorithm 3 of \cite{chen2023}.
+
+Moreover, the Anderson acceleration technique \cite{walker2011anderson} is introduced in \cite{chen2023} to improve the convergence behaviour of the proposed algorithm. The author validates the algorithm against analytical results for the local velocity field and macroscopic permeability, and benchmarks its performance. Despite this, it is still natural to ask if an alternative solver to the FFT method is better suited to the problem.
+
+In this project we wish to develop and implement a finite element method. In particular, this method avoids the approximation of the problem with reference coefficients, and solves the real problem directly. However, it does need to be suitably preconditioned. For this we use multigrid (see Section \ref{sec: multigrid}). Benefits of FEM include the ability to handle complex domain geometries, and more than just periodic boundary conditions. Moreover, the parallel scalability of FFT solvers is limited by global communcations but FEM solvers do not suffer with this issue so scale well in parallel. Since the solver will ultimately be used in a large-scale, industrial context, this is a highly desirable characteristic. A priori, it is not clear which solver is expected to have greater performance, therefore this is the key question that we aim to answer in this project. 
+
+\section{Mathematical preliminaries}\label{sec: maths}
+
+In this section we provide the necessary technical details that underpin our implementation of a finite element method for \eqref{eq: sb-standard}.
+
+\subsection{Weak formulation}
+
+Solving a PDE using a finite element method requires it to be written in weak form. Multiplying \eqref{eq: sb-standard} by test functions $(v, q) \in H^1_0(\Omega; \mathbb{R}^3) \times L^2_0(\Omega; \mathbb{R})$, and integrating by parts gives the following weak form:
+\begin{equation}\label{eq: sb-weak}
+    \begin{dcases}
+        \int_\Omega -\nabla u : \nabla(\varphi v) - \beta u \cdot v \dd x + \int_\Omega p \nabla \cdot v \dd x = \int_\Omega f \cdot v  \dd x, \quad &\forall v \in H^1_0(\Omega; \mathbb{R}^3),\\
+        \int_\Omega q \nabla \cdot u \dd x = 0, \quad &\forall q \in L^2_0(\Omega; \mathbb{R}),
+    \end{dcases}
+\end{equation}
+
+where $L^2_0(\Omega; \mathbb{R})$ is the space of $L^2(\Omega; \mathbb{R})$ functions that integrate to zero. Define the bilinear forms
+\begin{equation}\label{eq: bilinear-forms}
+    a_\beta(u, v) \coloneqq \int_\Omega -\nabla u : \nabla(\varphi v) - \beta u \cdot v \dd x, \quad \text{and} \quad b(u, q) \coloneqq \int_\Omega q \nabla \cdot u \dd x,
+\end{equation}
+and the continuous linear functional
+\begin{equation}\label{eq: cts-lin-func}
+    L(v) \coloneqq \int_\Omega f \cdot v \dd x.
+\end{equation}
+The resulting abstract form of equation \eqref{eq: sb-weak} is: 
+%\begin{eqn-box}
+
+Find $(u, p) \in H^1_0(\Omega; \mathbb{R}^3) \times L^2_0(\Omega; \mathbb{R})$ such that
+\begin{equation}\label{eq: sb-inf-saddle}
+    \begin{cases}
+        a_\beta(u, v)+b(v,p) = L(v), \\
+        b(u, q) = 0,
+    \end{cases}
+\end{equation}
+for all $(v, q) \in H^1_0(\Omega; \mathbb{R}^3) \times L^2_0(\Omega; \mathbb{R})$.
+%\end{eqn-box}
+For our choice of $\varphi$ and $\beta$, one can use Brezzi's theorem to prove that there exists a unique solution to \eqref{eq: sb-inf-saddle} (see Appendix \ref{app: brezzi}).
+
+In Appendix \ref{app: constrained-min} we show that \eqref{eq: sb-fin-saddle} arises from the following constrained minimisation problem
+\begin{equation}\label{eq: con-min}
+    \text{Minimise} \quad J(u) = \frac{1}{2}a_\beta(u, u) - L(u) \quad \text{subject to} \quad \nabla \cdot u = 0,
+\end{equation}
+where pressure is the Lagrange multiplier for the divergence-free condition. The unique solution to \eqref{eq: sb-fin-saddle} is a saddle point of the Lagrangian associated with \eqref{eq: con-min}, therefore the Stokes-Brinkman equations are called a saddle point system.
+
+In Section \ref{sec: fem}, we define a linear system \eqref{eq: sb-fin-saddle} that is the discrete analogue of the saddle point system given in \eqref{eq: sb-inf-saddle}. These systems are a general class of problems that arise throughout science and engineering. In particular, there exists susbtantial literature devoted to the efficient numerical solution of such systems \cite{benzi2005numerical,benzi2004preconditioner}, including papers specific to Stokes-type problems \cite{elman2002preconditioners,braess1997,larin2008}. In Section \ref{sec: iterative}, we use this information to choose an appropriate numerical method for solving the linear system.
+
+\subsection{Finite element approximation}\label{sec: fem}
+
+To obtain a finite element discretisation of \eqref{eq: sb-inf-saddle} we consider finite-dimensional closed subspaces $V_h$ and $Q_h$ of $V$ and $Q$ respectively, and equip them with basis functions. For this problem, the finite element discretisation must satisfy an inf-sup condition (Appendix \ref{app: inf-sup}) in order to be stable. We choose the Taylor-Hood finite element which was shown to give a stable discretisation in \cite{taylor1973}. This choice corresponds to piecewise quadratic basis functions for velocity, and piecewise linear basis functions for pressure. We denote these bases by $\{\phi_i\}_{i=0}^{N-1}$ and $\{\psi_j\}_{j=0}^{M-1}$ respectively. This is not the only stable choice, but we have picked it due to it being the simplest such choice to implement.
+
+Inserting the basis functions into the forms defined in \eqref{eq: bilinear-forms} and \eqref{eq: cts-lin-func} yields a finite-dimensional system of linear equations
+\begin{equation}\label{eq: sb-fin-saddle}
+    \begin{pmatrix}
+        A & B^{\mathrm{T}} \\
+        B & 0
+    \end{pmatrix}
+    \begin{pmatrix}
+        u \\
+        p
+    \end{pmatrix}
+    =
+    \begin{pmatrix}
+        F \\
+        0
+    \end{pmatrix},
+\end{equation}
+where
+\begin{align}
+    A_{ij} &= a_\beta(\phi_j, \phi_i) = \int_\Omega -\nabla \phi_j : \nabla(\varphi \phi_i) - \beta \phi_j \cdot \phi_i \dd x, \\
+    B_{ij} &= b(\phi_j, \psi_i) = \int_\Omega \psi_i \nabla \cdot \phi_j \dd x,\\
+    F_i &= L(\phi_i) = \int_\Omega f \cdot \phi_i \dd x.
+\end{align}
+
+\subsection{Iterative methods}\label{sec: iterative}
+
+Recall that we are solving the system of linear equations given in \eqref{eq: sb-fin-saddle}. A first choice for solving such a system would be a direct solver utilising, for example, a Cholesky or LU decomposition.
+
+Consider solving \eqref{eq: sb-standard} on a 2D mesh of size $N \times N$. The Taylor-Hood finite element corresponds to $1$ pressure degree of freedom (DoF) per cell, and $4$ velocity DoFs per cell. Thus, for a problem size of $N \times N$, we have $5 N^2$ DoFs. As we increase $N$, using a direct solver quickly becomes computationally expensive and numerically unstable.
+
+We turn to iterative methods. The basic idea is as follows. Consider a general linear system $Ax=b$, and choose an initial guess for the solution $x^0$. The iterate $x^{k+1}$ can then be computed from $x^k$ according to some chosen update rule. The goal is to define a scheme such that $x^k$ is close to the true solution after a small number of iterations. 
+
+In \cite{larin2008}, the authors study iterative solvers for a generalised Stokes problem 
+\begin{equation}\label{eq: gen-stokes}
+-\nu \Delta u + \xi u + \nabla p = f, \quad \nu > 0, \xi \geq 0.
+\end{equation}
+Observe that (up to a change of sign) this is our Stokes-Brinkman PDE with the functions $\varphi(x)$ and $\beta(x)$ replaced by $\nu$ and $\xi$. Two smoothers, Braess-Sarazin and Vanka, are introduced, and convergence results are proved for when these are coupled with multigrid methods. The authors also numerically verify their theoretical result. Moreover, the results in \cite{larin2008} correspond to the Taylor-Hood finite element. Motivated by this, these are the two methods we choose to implement for solving \eqref{eq: sb-fin-saddle}.
+
+\subsubsection{The Braess-Sarazin smoother}
+
+The Braess-Sarazin (BS) smoother was first introduced in \cite{braess1997}. We give a brief overview.
+
+Computing the block factorisation of the matrix in \eqref{eq: sb-fin-saddle}, and inverting gives
+\begin{equation}
+    \begin{pmatrix}
+        A & B^{\mathrm{T}} \\
+        B & 0 
+    \end{pmatrix}^{-1}
+    =
+    \begin{pmatrix}
+        I & -A^{-1}B^{\mathrm{T}} \\
+        0 & I
+    \end{pmatrix}
+    \begin{pmatrix}
+        A^{-1} & 0 \\
+        0 & S^{-1}
+    \end{pmatrix}
+    \begin{pmatrix}
+        I & 0 \\
+        -BA^{-1} & I
+    \end{pmatrix},
+\end{equation}
+where $S \coloneqq -B A^{-1} B^{\mathrm{T}}$ is the Schur complement. The solution of \eqref{eq: sb-fin-saddle} thus relies on efficient computations of $A^{-1}$ and $S^{-1}$. Unfortunately, $A^{-1}$ is dense therefore $S$ is also dense, and therefore not easily determined.
+
+The BS smoother replaces $A$ with $\alpha D_A$ where $D_A = \text{diag}(A)$ and $\alpha > 0$ is chosen to be greater than or equal to the largest eigenvalue of $A$. This gives the following iteration
+\begin{equation}
+    \begin{pmatrix}
+        u_{k+1} \\
+        p_{k+1}
+    \end{pmatrix}
+    =
+    \begin{pmatrix}
+        u_k \\
+        p_k
+    \end{pmatrix}
+    -
+    \begin{pmatrix}
+        \alpha D_A & B^{\mathrm{T}} \\
+        B & 0
+    \end{pmatrix}^{-1}
+    \left [
+        \begin{pmatrix}
+            A & B^{\mathrm{T}} \\
+            B & 0
+        \end{pmatrix}
+        \begin{pmatrix}
+            u_k \\
+            p_k
+        \end{pmatrix}
+        -
+        \begin{pmatrix}
+            f \\
+            0
+        \end{pmatrix}
+    \right ].
+\end{equation}
+Each step of the iteration involves solving
+\begin{equation}\label{eq: braess-intermediate}
+    \begin{pmatrix}
+        \alpha D_A & B^{\mathrm{T}} \\
+        B & 0
+    \end{pmatrix}
+    \begin{pmatrix}
+        \tilde{u} \\
+        \tilde{p}
+    \end{pmatrix}
+    =
+    \begin{pmatrix}
+        r_k \\
+        Bu_k
+    \end{pmatrix},
+\end{equation}
+where $\tilde{u} = u_k - u_{k+1}$, $\tilde{p} = p_k - p_{k+1}$ and $r_k = Au_k + B^{\mathrm{T}}p_k - f$. Crucially, it follows that $Bu_{k+1} = 0$ so that the BS iteration preserves the divergence-free condition. Equation \eqref{eq: braess-intermediate} can be reduced to solving
+\begin{equation}
+    B D_A^{-1} B^{\mathrm{T}}\tilde{p} = BD_A^{-1}r_k - \alpha B u_k,
+\end{equation}
+which is a Poisson-like equation for $\tilde{p}$. This can be computed using an iterative solver, then $\tilde{u}$ can be recovered via
+\begin{equation}
+    \alpha D_A\tilde{u} = r_k - B^{\mathrm{T}}\tilde{p}.
+\end{equation}
+Crucially, $D_A$ is diagonal meaning $\tilde u$ can be computed very cheaply.
+
+\subsubsection{The Vanka smoother}
+
+In \cite{larin2008}, the authors introduce a multiplicative Vanka smoother. We instead choose to use an additive Vanka smoother. The latter has both proven convergence results \cite{saberi2022}, and is simpler to implement. We give a brief overview following \cite{saberi2022}.
+
+Consider the saddle point problem given in \eqref{eq: sb-fin-saddle}. Suppose we have $n_p$ degrees of freedom for the pressure variable. Split the domain into subdomains $\{\mathcal{S}_i\}_{i=1}^{n_p}$ such that $\mathcal{S}_i$ consists of the $i$th pressure DoF and the connected velocity DoFs. Let $R_i$ denote the restriction operator to $\mathcal{S}_i$, and its transpose $R_i^\mathrm{T}$, the associated prolongation. Writing
+$$
+\mathcal{A} = 
+\begin{pmatrix}
+    A & B^{\mathrm{T}} \\
+    B & 0
+\end{pmatrix},
+$$
+define the local block $\mathcal{A}_i = R_i \mathcal{A} R_i^{\mathrm{T}}$. For a given weighting matrix $\omega_i$, the additive Vanka smoothing operator is then given by
+\begin{eqnarray}
+    S_{AV} \coloneqq \sum_{i=1}^{n_p} R_i^\mathrm{T}\omega_i \mathcal{A}_i^{-1}R_i.
+\end{eqnarray}
+Intuitively, one step of the additive Vanka smoother involves a loop over the pressure DoFs. For each DoF a small, local system is solved, usually with a direct solver. For a multiplicative Vanka smoother, the DoF updates would take place in a Gauss-Seidel manner, however for the additive version these are computed simultaneously.
+
+\subsubsection{Multigrid}\label{sec: multigrid}
+
+The two smoothers introduced thus far will have very slow convergence if used as stand-alone iterations because they only reduce the low-frequency components of the error. Multigrid methods address this problem by reducing the error on all length scales. Moreover, multigrid methods have been shown to be one of the most efficient techniques for solving saddle point problems \cite{larin2008}, and there exists theoretical convergence guarantees when BS or Vanka are used as smoothers. Therefore, it is clear that such methods should be included in our implementation. We give a brief overview of the key ideas underpinning multigrid following the presentation in \cite{reusken2008introduction}.
+
+Consider a nested sequence of mixed finite element spaces
+$$
+(V_{\ell - 1}, Q_{\ell - 1}) \subset (V_\ell, Q_\ell), \quad \ell = 1, \ldots, L
+$$
+with a fixed finest level $\ell = L \geq 2$. Associated to these spaces are restriction operators $R_\ell$ to move from level $\ell$ to $\ell - 1$, and prolongation operators $P_\ell$ to move from level $\ell - 1$ to $\ell$. Taking a finite element discretisation of a suitable, weakly formulated PDE on each level leads to a linear system on each level, $A_\ell x_\ell = b_\ell$, with true solution $x_\ell^*.$ Also define $p_\ell = P_\ell^{-1}P_{\ell-1}$, and $r_\ell = p_\ell^\mathrm{T}$.
+
+For brevity, we discuss a two grid setup. The basic idea is to perform a small number of iterations of a smoother on the fine grid. This smooths the error. The error on the coarse grid is cheap to compute, and prolongated onto the fine grid as an approximation to the fine error. This is then used as a correction term. It is common to apply postsmoothing steps after adding the correction because the prolongation introduces additional errors. We summarise this in Algorithm \ref{alg: tgm}.
+
+\SetKwComment{Comment}{/* }{ */}
+
+\begin{algorithm}
+\caption{Two grid method. Reproduced from \cite{reusken2008introduction}.}\label{alg: tgm}
+\KwIn{$x_\ell, b_\ell$}
+\eIf{$\ell = 0$}{
+    $x_0 = A_0^{-1}b_0$\;
+}
+{
+    $x_\ell = \mathrm{SMOOTHER}\brack{x_\ell, b_\ell}$ \Comment*[r]{smoother e.g. BS or Vanka}\ 
+    $d_{\ell-1} = r_\ell(b_\ell - A_\ell x_\ell)$ \Comment*[r]{restriction of defect}\
+    $e_{\ell-1} = A_{\ell-1}^{-1}d_{\ell-1}$ \Comment*[r]{solve coarse grid problem}\
+    $x_\ell = x_\ell + p_\ell e_{\ell-1}$ \Comment*[r]{add correction}\
+    $x_\ell = \mathrm{SMOOTHER}\brack{x_\ell, b_\ell}$ \Comment*[r]{postsmoothing}
+}
+\KwOut{$x_\ell$}
+\end{algorithm}
+
+In general, multigrid methods use a hierarchy of coarse grids where the two-grid method is applied recursively. More details can be found in \cite{reusken2008introduction}.
+
+For our implementation we use the aformentioned iterative solvers as preconditioners for a Krylov-subspace iteration. More precisely, we consider the Krylov-subspace method GRMES \cite{saad1986gmres}. We then either use BS or Vanka as a standalone preconditioner, or use multigrid as a preconditioner with BS or Vanka as the smoother. In \cite{walker2011anderson}, it was shown that Anderson acceleration is equivalent to GMRES for linear problems such as the one under consideration. Thus the solver in \cite{chen2023} can be viewed as GMRES preconditioned with FFT, and, as described above, the FEM solver we develop is a preconditioned GMRES method. This justifies the choice to consider a FEM solver, namely, the work in this project is equivalent to exploring if there exists a better preconditioner for solving \eqref{eq: sb-standard} using a preconditioned GMRES iteration.
+
+\section{Numerical experiments}\label{sec: results}
+
+\subsection{Implementation}\label{sec: implementation}
+We implement our solvers using the Firedrake python library \cite{FiredrakeUserManual}. All the results in this paper were generated using the code available at the following link \url{https://github.com/kamran-arora/Stokes-Brinkman-IRP}. We also made use of the code used to perform the experiments in \cite{chen2023}. This code is available at \url{https://github.com/yang-chen-2022/fftpermeability-StokesBrinkman}.
+
+Motivated by Section \ref{sec: fem}, we use the Taylor-Hood finite element. For the BS smoother we choose $\alpha = 1.25$ because this is shown to be optimal for the problem in \cite{larin2008}, however in future work it would be instructive to consider varying this value. Similarly, we choose $\mu = \mu_e$ for simplicity but in future work these values should be varied. All experiments in this paper used periodic boundary conditions in velocity and pressure for the chosen mesh. Moreover, any experiments that use multigrid have the following setup: the mesh is of resolution $2^K \times 2^K$ where $K \geq 4$, and the number of levels (see Section \ref{sec: multigrid}) is $K-3$. Parameter details for individual experiments are described in their corresponding sections of this report.
+
+\subsection{Stopping criteria}\label{sec: stopping}
+
+We now describe the different criteria used to determine convergence of the FFT and FEM solvers.
+
+\subsubsection{FFT}
+The FFT solver uses the difference in subsequent iterations of velocity to determine convergence \cite{chen2023}. In particular, given a tolerance $\varepsilon > 0$, the solver is said to have converged if
+\begin{equation}
+    \frac{\sqrt{\abrack{\norm{u^{k+1}-u^k}_2^2}_\Omega}}{\norm{U}_2} < \varepsilon,
+\end{equation}
+where $u^k$ denotes the $k$th iterate of the local velocity field.
+
+\subsubsection{FEM}
+The FEM solver uses the residual of the linear system to determine convergence. In particular, rewrite \eqref{eq: sb-fin-saddle} as $\mathcal{A}x = b$. For the $k$th iterate $x^k$, define the (unpreconditioned) residual
+\begin{equation}
+    r^k \coloneqq b - \mathcal{A}x^k.
+\end{equation}
+Convergence is determined by a relative tolerance, $\mathrm{RTOL} > 0$. This means that the solver is said to converge if
+\begin{equation}
+    \norm{r^k}_2 < \mathrm{RTOL} \times \norm{r^0}_2.
+\end{equation}
+For some experiments, we instead use the preconditioned residual defined by
+\begin{equation}\label{eq: precon-res}
+    r^k_p \coloneqq P^{-1}\brack{b - \mathcal{A}x^k},
+\end{equation}
+where $P^{-1}$ is an arbitrary preconditioner. The choice of residual for a given experiment is given in the associated section of this report. Determining which choice of residual should be used in practice is a topic for future work.
+
+\subsection{Domain geometries}
+
+In Sections \ref{sec: initial-ex} and \ref{sec: parallel-channel}, we use the following two domain geometries for testing. These are the geometries used in \cite{chen2023} for algorithm validation and benchmarking, therefore are suitable for initial experiments using our FEM solver.
+
+As described in Section \ref{sec: problem-formulation}, $\beta(x)$ takes the value $0$ when $x \in \Omega_f$, and the value $\mu/k_s$ when $x \in \Omega_s$.
+
+\begin{figure}[H]
+    \centering
+  
+    \subfigure[Parallel channel]{
+      \includegraphics[width=0.45\linewidth]{figures/parallel-channel.png}
+      \label{fig: parallel-channel-geometry}
+    }
+    \hfill
+    \subfigure[Square hole]{
+      \includegraphics[width=0.45\linewidth]{figures/square-hole-geometry.png}
+      \label{fig: square-hole-geometry}
+    }
+    \caption{Schematics of the toy problem domain geometries. These figures are taken from \cite{chen2023}.}
+    \label{fig: domain-geometries} 
+\end{figure}
+
+\subsection{Initial experiments}\label{sec: initial-ex}
+
+Our initial experiments are based on the square-hole geometry shown in Figure \ref{fig: square-hole-geometry}. The author of \cite{chen2023} used this to benchmark their algorithms, thus it is a suitable toy problem on which to test our implementation.
+
+For the first experiment we fix a mesh size of $64 \times 64$, let $L=1~\mathrm{mm}$, and $R = 0.4~\mathrm{mm}$. We use microscopic permeabilities $k_s \in \{10^{-2}, 10^{-4}, 10^{-6}, 10^{-8}, 10^{-10}\}~\mathrm{mm}^2.$ The loading condition is a macroscopic pressure gradient $G = 1~\mathrm{MPa}$ in the positive $x$-direction, and $\mu = \mu_e = 1~\mathrm{MPa}\cdot\mathrm{s}$. The FFT tolerance is $\varepsilon=10^{-6}$, and the FEM tolerance is $\mathrm{RTOL} = 10^{-6}$ for the preconditioned residual \eqref{eq: precon-res}. We run the solvers to convergence, and use \eqref{eq: darcy-macro} to compute $\mathbf{K}$ which we then rescale by $k_s$. 
+
+Figure \ref{fig: FFT-vs-FEM} shows our results and those of the FFT solver. We immediately see that the two solvers in their current states are not converging to the same solution. We hypothesise that this is due to two reasons:
+\begin{enumerate}
+    \item The stopping criterions introduced in Section \ref{sec: stopping} are not equivalent, namely, choosing $\varepsilon = \mathrm{RTOL}$ does not mean the solvers are stopping at the same solution.
+    \item Error due to the numerical discretisation. In particular, our solver uses a finite element discretisation whereas the FFT solver uses a staggered finite difference \cite{chen2023}.
+\end{enumerate}
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=0.75\textwidth]{figures/FFT_vs_FEM.png}
+    \caption{Rescaled macroscopic permeabilities for the square hole geometry on a $64 \times 64$ mesh. Comparison between FEM and FFT solvers. No marker means the method failed to converge. Parameters: $k_s \in \{10^{-2}, 10^{-4}, 10^{-6}, 10^{-8}, 10^{-10}\}, \mu=\mu_e = 1, G=1, R/L = 0.4, \varepsilon = 10^{-6}$ and $\mathrm{RTOL} = 10^{-6}$ (preconditioned).}
+    \label{fig: FFT-vs-FEM}
+\end{figure}
+
+Crucially, this initial experiment suggests further analysis into the convergence behavior of the FEM solvers is necessary before a fair performance comparison with the FFT solver can be made.
+
+Furthermore, there is concerning numerical behaviour at the boundary between the fluid and solid region for both the FEM and FFT solvers. An example using BS with multigrid is given in Figure \ref{fig: spiky-main}, where $k_s = 10^{-6}$. We see that the solution becomes numerically unstable at the interface but is otherwise smooth. We expect global continuity of our solution so this is another problem that needs addressing before the solvers can be compared. We also observe that the ``blow-up'' is an order of magnitude larger for the FEM solver. 
+
+% A full collection of plots is given in Appendix \ref{app: local-velocity}, all of which display similar behaviour to Figure \ref{fig: spiky-main}.
+
+\begin{figure}[H]
+    \centering
+  
+    \subfigure[FFT]{
+      \includegraphics[width=0.45\linewidth]{figures/fft_spiky_64_6.png}
+      \label{fig: fft_spiky_64_6}
+    }
+    \hfill
+    \subfigure[FEM: BS with multigrid]{
+      \includegraphics[width=0.45\linewidth]{figures/fem_spiky_bs_mg_64_6.png}
+      \label{fig: fem_spiky_bs_mg_64_6}
+    }
+    \caption{Local velocity field computed for the square hole geometry using FFT, and BS with multigrid on a $64 \times 64$ mesh. Parameters: $k_s = 10^{-6}, \mu=\mu_e = 1, G=1, R/L = 0.4, \varepsilon = 10^{-6}$ and $\mathrm{RTOL} = 10^{-6}$ (preconditioned).}
+    \label{fig: spiky-main} % Label for the entire figure
+\end{figure}
+
+\subsection{Parallel channel geometry}\label{sec: parallel-channel}
+
+In light of Section \ref{sec: initial-ex}, we need to validate the FEM solver. We use the parallel channel geometry (Figure \ref{fig: domain-geometries}) introduced in \cite{chen2023} which has a known analytical solution. 
+
+The FFT solver uses a mesh-size of $1 \times n_y$. Due to technical limitations, the FEM solver has to be implememted on a mesh of size $n_x \times n_y$. Full details of the differences in implementation are given in Appendix \ref{app: firedrake-parallel-channel}. We set $a = b = 0.1~\mathrm{mm}$, $\mu = \mu_e = 1~\mathrm{MPa}\cdot\mathrm{s}$, and $= 1~\mathrm{MPa}.$ The FFT tolerance is $\varepsilon=10^{-6}$, and the FEM tolerance is $\mathrm{RTOL} = 10^{-6}$ for the preconditioned residual \eqref{eq: precon-res}.
+
+\begin{figure}[h!]
+    \centering
+  
+    \subfigure[FFT]{
+      \includegraphics[width=0.3\linewidth]{figures/parallel-channel-validation-yang.png}
+      \label{fig: pc-fft}
+    }
+    \hfill
+    \subfigure[BS + multigrid]{
+      \includegraphics[width=0.3\linewidth]{figures/parallel-channel-validation-bs.png}
+      \label{fig: pc-bs}
+    }
+    \subfigure[Vanka + multigrid]{
+      \includegraphics[width=0.3\linewidth]{figures/parallel-channel-validation-vanka.png}
+    }
+    \label{fig: pc-vanka}
+  
+    \caption{Local velocity field for the parallel channel toy problem. Parameters: $a = 0.1, b=0.1, \mathrm{Lx} = a+b, \mathrm{Ly}=1, \mu=\mu_e=1, G=1, k_s \in \{10^{-2}, 10^{-4}, 10^{-6}, 10^{-8}, 10^{-10}\}, \varepsilon = 10^{-6}, \mathrm{RTOL} = 10^{-6} \text{(preconditioned)}$.}
+    \label{fig: pc-validation} 
+\end{figure}
+
+For the first experiment we consider $n_x = n_y \in \{16, 32, 64, 128, 256\}$. We run both solvers to convergence, and plot the local velocity field against the analytic solution. The results are given in Figure \ref{fig: pc-validation}. We see that both solvers are converging to the correct solution. Moreover, the solution is continuous at the interface between the fluid and solid region. This is a promising result however the numerical instabilities observed in Figure \ref{fig: spiky-main} make it clear that further testing for other toy problems is still required.
+
+For the second experiment, we produce a preliminary comparison between the FEM and FFT solvers. The aim is to compare their performance on a problem for which they have both been validated, and to compare the stopping criteria. We set $a = b = 0.1~\mathrm{mm}$, $\mu = \mu_e = 1~\mathrm{MPa}\cdot\mathrm{s}$, and $= 1~\mathrm{MPa}.$ The FFT tolerance is $\varepsilon=10^{-6}$, and the FEM tolerance is $\mathrm{RTOL} = 10^{-6}$ for the preconditioned residual \eqref{eq: precon-res}. Due to technical limitations explained in Appendix \ref{app: firedrake-parallel-channel}, for a given choice of $n_y$, FFT solves for $n_y$ DoFs, whereas the FEM solves for $5n_y^2$ DoFs. To make the comparison fair, we consider how quantities scale with DoFs instead of $n_y$. We measure iterations, total time, time per iteration, and relative $L^2$ error with the analytical solution. Results are given in Figure \ref{fig: parallel-channel-comparison}.
+
+\begin{figure}[H]
+    \centering
+  
+    \subfigure[Relative $L^2$ error]{
+      \includegraphics[width=0.45\linewidth]{figures/rel_l2_pc.png}
+      \label{fig: rel_l2_pc}
+    }
+    \hfill
+    \subfigure[Iterations]{
+      \includegraphics[width=0.45\linewidth]{figures/iters_pc.png}
+      \label{fig: iters_pc}
+    }
+  
+    \subfigure[Total time]{
+      \includegraphics[width=0.45\linewidth]{figures/times_pc.png}
+      \label{fig: times_pc}
+    }
+    \hfill
+    \subfigure[Time per iteration]{
+      \includegraphics[width=0.45\linewidth]{figures/time_per_iter_pc.png}
+    }
+    \label{fig: time_per_iter_pc}
+  
+    \caption{Comparison between FFT and FEM solvers on the parallel channel toy problem. Parameters: $a = 0.1, b=0.1, \mathrm{Lx} = a+b, \mathrm{Ly}=1, \mu=\mu_e=1, G=1, k_s = 10^{-6}, \varepsilon = 10^{-6}, \mathrm{RTOL} = 10^{-6} \text{(preconditioned)}$.}
+    \label{fig: parallel-channel-comparison} 
+\end{figure}
+
+Observe, that for $\varepsilon = \mathrm{RTOL}$, the FEM solver leads to a greater reduction in the relative $L^2$ error, and that the FFT solver plateaus. This suggests that a residual based stopping criterion is a better choice. This is a delicate point that we discuss further in Section \ref{sec: future-work}. As predicted by the theory, Vanka and BS as standalone preconditioners do not perform well. In particular, the number of iterations to converge quickly blows up and, in fact, both fail to converge when the number of DoFs reaches approximately $80, 000$. Due to this, it is reasonable to no longer consider them as standalone methods going forward. When coupled with multigrid, both smoothers converge for all the experiments. Morevoer, the number of iterations almost stay constant as the problem size increases. Note that the theory predicts they should remain constant, and it is believed that this behaviour can be achieved by finetuning of the multigrid cycles. 
+
+\section{Discussion}\label{sec: discussion}
+
+\subsection{Future work}\label{sec: future-work}
+
+We now discuss the different avenues that can be explored in the future.
+
+\begin{enumerate}
+    \item Figure \ref{fig: parallel-channel-comparison} suggests that the FFT solver is quicker. However, with the current stopping criteria it achieves a worse relative $L^2$ error than the seemingly slower FEM solvers. In fact, this is not a particularly fair comparison due to the technical limitations (Appendix \ref{app: firedrake-parallel-channel}) meaning that the FEM solver has to be setup on a 2D grid. We hypothesise that if the FEM solver can be set up on a $n_x \times 1$ mesh, then it will outperform the FFT solver. It is reasonable to assume that on this mesh the total time will be reduced by a factor of $n_y$, and the number of iterations will remain the same. Under these assumptions we would attain the results given in Figure \ref{fig: pc_new}.
+    
+    \begin{figure}[H]
+        \centering
+      
+        \subfigure[Relative $L^2$ error]{
+          \includegraphics[width=0.45\linewidth]{figures/times_pc_new.png}
+          \label{fig: pc_new_1}
+        }
+        \hfill
+        \subfigure[Iterations]{
+          \includegraphics[width=0.45\linewidth]{figures/time_per_iter_pc_new.png}
+          \label{fig: pc_new_2}
+        }
+      
+        \caption{Predicted results for the FEM solver (vs the FFT solver) for the parallel channel geometry if it were run on a $n_x \times 1$ mesh. Parameters: $a = 0.1, b=0.1, \mathrm{Lx} = a+b, \mathrm{Ly}=1, \mu=\mu_e=1, G=1, k_s = 10^{-6}, \varepsilon = 10^{-6}, \mathrm{RTOL} = 10^{-6} \text{(preconditioned)}$.}
+        \label{fig: pc_new} 
+    \end{figure}
+
+    These results suggest that the FEM solver would outperform the FFT solver giving us a first insight into which has the better performance. However, these are only estimated results, and we cannot make informed conclusions without doing these experiments. Unfortunately, this is currently not possible due to the discussed technical limitations.
+
+    \item We propose a selection of further numerical experiments:
+    \begin{enumerate}
+        \item Repeat the experiment for Figure \ref{fig: FFT-vs-FEM} with a tight tolerance (for example $10^{-14}$) to see if the solutions get closer together.
+        \item Repeat the experiment for Figure \ref{fig: spiky-main} but cut out a small region around the interface. One should then check if the solutions coincide away from the region of numerical instability.
+        \item Repeat the experiments of Section \ref{sec: parallel-channel} with different tolerances. In particular, consider Figure \ref{fig: rel_l2_pc}, and look at how these results change.
+        \item Repeat the experiments for Figure \ref{fig: pc-validation} but with meshes that do not coincide with the fluid-solid interface, and check if the numerical solution exhibits instability.
+    \end{enumerate}
+
+    \item As discussed in Section \ref{sec: parallel-channel}, a consistent stopping criterion is necessary before a fair (and useful) performance comparison between the FFT and FEM solvers can be made. It is worth noting that the author of \cite{chen2023} has recently updated their FFT implementation to use a residual based solver. The first step would be to repeat the experiments of Section \ref{sec: parallel-channel}, and re-analyse the results. Additionally, a decision must be made on whether to use the preconditioned or unpreconditioned residual for the FEM solver. We propose to first perform further numerical experiments comparing both choices for different tolerances, but if the results do not shed much light on this issue a deeper analysis of the underlying mathematics may be necessary.
+    \item In general, the literature surrounding Stokes-type problems focuses on the standard Stokes equation or a generalised Stokes equation \eqref{eq: gen-stokes}. It is important to note that the Stokes-Brinkman problem contains the discontinuous Brinkman term $\beta(x)$, which can take large values depending on the local permeability $k_s$. Our initial implementations were based off of convergence guarantees given in the literature for problems of the former type \cite{larin2008,braess1997}. It is not immediately obvious whether such claims hold in our case. Moreover, in Figure \ref{fig: spiky-main}, we observed numerical instabilities at the interface containing the discontinuity. This is a clear issue that needs resolving before moving forward. Possible approaches include
+    \begin{enumerate}
+        \item Further numerical experiments
+        \item A different finite element choice. For example, would discontinuous Galerkin be a better choice?
+        \item A different solver. One such example is the GenEO framework \cite{spillane2021abstract}.
+    \end{enumerate}
+    \item A key reason for designing a FEM solver is its superior parallel scalability compared to the FFT solver. Firedrake is now available on the Nimbus high-performance computing (HPC) system at the University of Bath. This will allow for numerical experiments to verify the expected scalability for the Stokes-Brinkman problem, and to compare this with the corresponding results given in \cite{chen2023} for the FFT solver.
+\end{enumerate}
+
+\subsection{Connections with the other strands}
+
+The design of a FEM solver is just one part of an interdisciplinary research project looking at multiscale flow in porous media. The general idea is as follows:
+
+We wish to create a large training dataset of bundle geometries and macroscopic permeabilities, $(\beta(x), \mathbf{K})$, to be used by the machine learning model. This would be done by generating physically viable images. After post-processing these would be passed through a numerical solver to obtain the corresponding macroscopic permeability. It is expected that this will be a computationally expensive task hence we wish to use the most efficient and accurate solver at our disposal. The machine learning model can be trained on this dataset, and then used in an industrial context to make predictions of macroscopic permeability. Ultimately, this will allow for the optimisation and streamlining of the manufacturing process of composite materials formed via resin injection. The connections between the strands are summarised in Figure \ref{fig: connections}.
+
+\begin{figure}[h!]
+    \centering
+    \includegraphics[width=1\textwidth]{figures/Connections Diagram.png}
+    \caption{Connections between the different strands of the research project.}
+    \label{fig: connections}
+\end{figure}
+
+With reference to the purple strand in Figure \ref{fig: connections}, we have made progress towards the design of a FEM solver but, as discussed, we have not been able to produce a fair performance comparison with the FFT solvers. This means we are still not in a position to make an informed decision on which solver is the best to use going forward in the project which ultimately limits how well we can integrate our current work into the wider project. Despite this, the project is headed in a clear direction, and we have an idea of the next steps:
+
+\begin{enumerate}
+    \item For the statistics strand, it is not currently know what format the randomly generated images will take after post-processing. Once this is known the FEM solver will need to be capable of translating the bundle geometries defined via these images onto a mesh and initialising the Brinkman term $\beta(x)$.
+    \item For the machine learning strand, experiments have been performed using Fourier Neural Operator (FNO) architecture. Currently it is being trained using macroscopic permeabilities computed using the FFT solver. Even without a performance comparison, it would be instructive to train the FNO method using the FEM solvers outputs. Perhaps this will give further insight into which method may be the better choice, or at the very least it may open up further directions for exploration.
+\end{enumerate}
+
+\bibliographystyle{plainurl}
+\bibliography{references}
+
+\appendix
+\section{Well-posedness of the Stokes-Brinkman equations}\label{app: brezzi}
+
+Consider Brezzi's theorem for infinite-dimensional saddle point systems.
+
+\begin{theorem}[Brezzi \cite{brezzi}]\label{theo: brezzi}
+Let $V, Q$ be real Hilbert spaces. Let $a$ be a bilinear form on $V \times V$. Let $b$ be a bilinear form on $V \times Q$. Let $F \in V^*$ and $G \in Q^*$. Consider the following infinite-dimensional saddle-point problem:
+
+Find $(u, p) \in V \times Q$ such that
+\begin{equation}\label{eq: abstract-saddle}
+    \begin{cases}
+        a(u, v)+b(v,p) = F(v), \\
+        b(u, q) = G(q),
+    \end{cases}
+\end{equation}
+for all $(v, q) \in V \times Q$.
+
+Assume that
+\begin{enumerate}
+    \item $a$ and $b$ are bounded.
+    \item The auxillary problem
+    $$
+    \text{Find} \quad u \in \text{Ker}(b) \quad \text{such that} \quad a(u, v) = F(v) \quad \forall v \in \text{Ker}(b)
+    $$
+    is well-posed.
+    \item $b$ satisfies an inf-sup condition, namely, there exists $\gamma \in \mathbb{R}$ such that
+    $$
+        0<\gamma \leq \inf_{q \neq 0} \sup_{v \neq 0} \frac{b(v, q)}{\lVert v\rVert_V \lVert q\rVert_Q}
+    $$
+\end{enumerate}
+Then there exists a unique solution $(u, p) \in V \times Q$ to \eqref{eq: abstract-saddle}.
+\end{theorem}
+
+Using Brezzi's theorem, one can show that the saddle point system given by \eqref{eq: sb-inf-saddle} has a unique solution. In particular, condition 1 follows from the Cauchy-Schwarz inequality, condition 2 follows from an application of Lax-Milgram, and condition 3 was proved by Ladyzhenskaya \cite{ladyzhen}.
+
+\section{The Stokes-Brinkman saddle point system arises \\from a constrained minimisation problem}\label{app: constrained-min}
+
+Let $u \in H^1_0(\Omega ; \mathbb{R}^3)$. Consider the constrained minimisation problem
+$$
+    \text{Minimise} \quad J(u) = \frac{1}{2}a_\beta(u, u) - L(u) \quad \text{subject to} \quad \nabla \cdot u = 0.
+$$
+Introduce a Lagrange multiplier $p \in L^2_0(\Omega ; \mathbb{R})$. We interpret this as pressure. The Lagrangian is given by
+$$
+L(u, p) = \frac{1}{2}a_\beta(u, u) - L(u) + \int_\Omega p \nabla \cdot u \dd x.
+$$
+The optimality conditions are
+\begin{align*}
+    L_u(u, p; v) &= \lim_{\varepsilon \rightarrow 0^+} \frac{L(u+\varepsilon v, p) - L(u, p)}{\varepsilon} = 0\\
+    L_p(u, p; q) &= \lim_{\varepsilon \rightarrow 0^+} \frac{L(u, p+\varepsilon q) - L(u, p)}{\varepsilon} = 0.
+\end{align*}
+Computing these quantities gives the Stokes-Brinkman saddle-point system
+$$
+\begin{cases}
+    a_\beta(u, v)+b(v,p) = L(v), \\
+    b(u, q) = 0.
+\end{cases}
+$$
+
+\section{Inf-Sup condition for the finite element}\label{app: inf-sup}
+
+Consider the following theorem reproduced from \cite{farrell-fem}.
+
+\begin{theorem}[(14.7.1) \cite{farrell-fem}]
+    Let $V_h$ be a closed subspace of $V$ and $Q_h$ be a closed subspace of $Q$. Consider the Galerkin approximation to the \eqref{eq: abstract-saddle}:
+    
+    \begin{equation}\label{eq: abstract-galerkin}
+        \begin{cases}
+            a(u_h, v_h)+b(v_h,p_h) = F(v_h), \\
+            b(u_h, q_h) = G(q_h),
+        \end{cases}
+    \end{equation}
+    Define
+    \begin{equation}
+        K_h = \{v_h \in V_h\ | \ b(v_h, q_h) = 0\ \text{for all}\ q_h \in Q_h\}.
+    \end{equation}
+    In addition to the assumptions of Theorem \ref{theo: brezzi}, suppose that
+    \begin{enumerate}
+        \item The problem
+        $$
+        \text{Find} \quad u_h \in K_h \quad \text{such that} \quad a(u_h, v_h) = F(v_h) \quad \forall v_h \in K_h
+        $$
+        is well-posed.
+        \item $b$ satisfies an inf-sup condition, namely, there exists $\tilde \gamma \in \mathbb{R}$ such that
+        $$
+            0<\tilde \gamma \leq \inf_{q_h \neq 0} \sup_{v_h \neq 0} \frac{b(v_h, q_h)}{\lVert v_h\rVert_V \lVert q_h\rVert_Q}
+        $$
+    \end{enumerate}
+    Then \eqref{eq: abstract-galerkin} is well-posed.
+    
+\end{theorem}
+
+In particular, any choice of finite element discretisation must satisfy the above inf-sup theorem in order for the discrete system to be well-posed.
+
+% \section{Local velocity fields for the initial experiments}\label{app: local-velocity}
+
+\section{Firedrake implementation of the parallel channel toy problem}\label{app: firedrake-parallel-channel}
+
+The FFT implementation of the parallel channel toy problem uses a grid of size $1 \times n_y \times 1$. Unfortunately, using the same method for the Firedrake implementation is not possible due to technical limitations. Therefore, we solve the problem on a grid of size $n_x \times n_y$. Moreover, to ensure compatability with standard Firedrake meshes, we rotate and shift the problem so that we solve on the interval $[0, a+b]$ instead of $[-b, a]$, and velocity flow is in the positive y-direction instead of the positive x-direction. This means that for each column of cells (i.e. a fixed interval of the x-axis), the solution is identical across each of these cells (since the problem is inherently 1D so the y-component of velocity remains fixed). Crucially, this dramatically increases the problem size we are solving. Therefore, in an attempt to make a more fair comparison with the FFT solver, we scaled any measured quantities with respect to the number of DoFs.
+
+\end{document}
