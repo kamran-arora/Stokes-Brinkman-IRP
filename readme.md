@@ -1,4 +1,4 @@
-Python code to simulate the [Stokes-Brinkman equations](https://onlinelibrary.wiley.com/doi/full/10.1002/fld.5199)
+Python code to simulate the [Stokes-Brinkman equations](https://onlinelibrary.wiley.com/doi/full/10.1002/fld.5199) using the finite element method
 
 - generalised_stokes.py solves the PDE for a supplied configuration
 - configurations can be added in configurations.py by inheriting from the abstract base class
